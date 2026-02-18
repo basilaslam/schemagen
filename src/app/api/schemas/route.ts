@@ -1,10 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/mongodb';
-import { SavedSchema, SavedSchemaInput } from '@/types/schema';
+import { SavedSchema } from '@/types/schema';
 import { nanoid } from 'nanoid';
 import { auth } from '@clerk/nextjs/server';
 import { rateLimit, getClientIp } from '@/lib/rateLimit';
 import { validateSchema, validateSchemaId } from '@/lib/validation';
+import {
+  UnauthorizedError,
+  NotFoundError,
+  ValidationError,
+  RateLimitError,
+  DatabaseError,
+  isAppError,
+} from '@/lib/errors';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -19,23 +27,16 @@ export async function POST(req: NextRequest) {
     const rateLimitResult = await rateLimit(`POST:${ip}`, RATE_LIMIT, RATE_LIMIT_WINDOW);
 
     if (!rateLimitResult.success) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Rate limit exceeded. Please try again later.',
-          retryAfter: Math.ceil((rateLimitResult.reset - Date.now()) / 1000),
-        },
-        { status: 429 }
+      throw new RateLimitError(
+        'Rate limit exceeded. Please try again later.',
+        Math.ceil((rateLimitResult.reset - Date.now()) / 1000)
       );
     }
 
     const { userId } = await auth();
 
     if (!userId) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
+      throw new UnauthorizedError();
     }
 
     const body = await req.json();
@@ -44,14 +45,7 @@ export async function POST(req: NextRequest) {
     const validation = validateSchema(body);
 
     if (!validation.success) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Invalid schema data',
-          errors: validation.errors,
-        },
-        { status: 400 }
-      );
+      throw new ValidationError('Invalid schema data', validation.errors);
     }
 
     const { dynamic = false } = body;
@@ -66,8 +60,13 @@ export async function POST(req: NextRequest) {
     };
 
     const db = await getDb();
-    // Use any to bypass type check for _id field - MongoDB will handle it
-    await db.collection('schemas').insertOne(savedSchema as any);
+
+    try {
+      // Use any to bypass type check for _id field - MongoDB will handle it
+      await db.collection('schemas').insertOne(savedSchema as any);
+    } catch (dbError) {
+      throw new DatabaseError('Failed to save schema to database', dbError);
+    }
 
     return NextResponse.json({
       success: true,
@@ -76,8 +75,31 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     console.error('Error saving schema:', error);
+
+    if (isAppError(error)) {
+      const response: any = {
+        success: false,
+        error: error.message,
+        code: error.code,
+      };
+
+      if (error.details) {
+        response.details = error.details;
+      }
+
+      if (error instanceof RateLimitError && error.retryAfter) {
+        response.retryAfter = error.retryAfter;
+      }
+
+      return NextResponse.json(response, { status: error.statusCode });
+    }
+
     return NextResponse.json(
-      { success: false, error: 'Failed to save schema' },
+      {
+        success: false,
+        error: 'An unexpected error occurred',
+        code: 'INTERNAL_ERROR',
+      },
       { status: 500 }
     );
   }
@@ -90,23 +112,16 @@ export async function GET(req: NextRequest) {
     const rateLimitResult = await rateLimit(`GET:${ip}`, RATE_LIMIT, RATE_LIMIT_WINDOW);
 
     if (!rateLimitResult.success) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Rate limit exceeded. Please try again later.',
-          retryAfter: Math.ceil((rateLimitResult.reset - Date.now()) / 1000),
-        },
-        { status: 429 }
+      throw new RateLimitError(
+        'Rate limit exceeded. Please try again later.',
+        Math.ceil((rateLimitResult.reset - Date.now()) / 1000)
       );
     }
 
     const { userId } = await auth();
 
     if (!userId) {
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized' },
-        { status: 401 }
-      );
+      throw new UnauthorizedError();
     }
 
     const searchParams = req.nextUrl.searchParams;
@@ -116,30 +131,53 @@ export async function GET(req: NextRequest) {
     const idValidation = validateSchemaId(schemaId);
 
     if (!schemaId || !idValidation.success) {
-      return NextResponse.json(
-        { success: false, error: idValidation.error || 'Schema ID required' },
-        { status: 400 }
-      );
+      throw new ValidationError(idValidation.error || 'Schema ID required');
     }
 
     const db = await getDb();
-    const schema = await db.collection('schemas').findOne({
-      schemaId,
-      userId,
-    }) as SavedSchema | null;
+
+    let schema: SavedSchema | null;
+    try {
+      schema = await db.collection('schemas').findOne({
+        schemaId,
+        userId,
+      }) as SavedSchema | null;
+    } catch (dbError) {
+      throw new DatabaseError('Failed to fetch schema from database', dbError);
+    }
 
     if (!schema) {
-      return NextResponse.json(
-        { success: false, error: 'Schema not found' },
-        { status: 404 }
-      );
+      throw new NotFoundError('Schema', schemaId);
     }
 
     return NextResponse.json({ success: true, schema });
   } catch (error) {
     console.error('Error fetching schema:', error);
+
+    if (isAppError(error)) {
+      const response: any = {
+        success: false,
+        error: error.message,
+        code: error.code,
+      };
+
+      if (error.details) {
+        response.details = error.details;
+      }
+
+      if (error instanceof RateLimitError && error.retryAfter) {
+        response.retryAfter = error.retryAfter;
+      }
+
+      return NextResponse.json(response, { status: error.statusCode });
+    }
+
     return NextResponse.json(
-      { success: false, error: 'Failed to fetch schema' },
+      {
+        success: false,
+        error: 'An unexpected error occurred',
+        code: 'INTERNAL_ERROR',
+      },
       { status: 500 }
     );
   }
