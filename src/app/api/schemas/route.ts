@@ -13,6 +13,7 @@ import {
   DatabaseError,
   isAppError,
 } from '@/lib/errors';
+import { logger, logRequest, logError } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -21,22 +22,29 @@ const RATE_LIMIT = 20; // 20 requests per minute
 const RATE_LIMIT_WINDOW = 60000; // 1 minute
 
 export async function POST(req: NextRequest) {
+  const startTime = Date.now();
+  const ip = await getClientIp(req);
+  const userAgent = req.headers.get('user-agent') || undefined;
+
   try {
     // Rate limiting
-    const ip = await getClientIp(req);
     const rateLimitResult = await rateLimit(`POST:${ip}`, RATE_LIMIT, RATE_LIMIT_WINDOW);
 
     if (!rateLimitResult.success) {
-      throw new RateLimitError(
+      const error = new RateLimitError(
         'Rate limit exceeded. Please try again later.',
         Math.ceil((rateLimitResult.reset - Date.now()) / 1000)
       );
+      logError(error, 'POST', '/api/schemas', undefined, 429, { ip });
+      throw error;
     }
 
     const { userId } = await auth();
 
     if (!userId) {
-      throw new UnauthorizedError();
+      const error = new UnauthorizedError();
+      logError(error, 'POST', '/api/schemas', undefined, 401, { ip });
+      throw error;
     }
 
     const body = await req.json();
@@ -45,7 +53,9 @@ export async function POST(req: NextRequest) {
     const validation = validateSchema(body);
 
     if (!validation.success) {
-      throw new ValidationError('Invalid schema data', validation.errors);
+      const error = new ValidationError('Invalid schema data', validation.errors);
+      logError(error, 'POST', '/api/schemas', userId, 400, { ip });
+      throw error;
     }
 
     const { dynamic = false } = body;
@@ -65,14 +75,19 @@ export async function POST(req: NextRequest) {
       // Use any to bypass type check for _id field - MongoDB will handle it
       await db.collection('schemas').insertOne(savedSchema as any);
     } catch (dbError) {
-      throw new DatabaseError('Failed to save schema to database', dbError);
+      const error = new DatabaseError('Failed to save schema to database', dbError);
+      logError(error, 'POST', '/api/schemas', userId, 500, { ip });
+      throw error;
     }
+
+    const duration = Date.now() - startTime;
+    logRequest('POST', '/api/schemas', userId, 201, duration, { ip, schemaId });
 
     return NextResponse.json({
       success: true,
       schemaId,
       dynamic,
-    });
+    }, { status: 201 });
   } catch (error) {
     console.error('Error saving schema:', error);
 
@@ -106,22 +121,28 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
+  const startTime = Date.now();
+  const ip = await getClientIp(req);
+
   try {
     // Rate limiting
-    const ip = await getClientIp(req);
     const rateLimitResult = await rateLimit(`GET:${ip}`, RATE_LIMIT, RATE_LIMIT_WINDOW);
 
     if (!rateLimitResult.success) {
-      throw new RateLimitError(
+      const error = new RateLimitError(
         'Rate limit exceeded. Please try again later.',
         Math.ceil((rateLimitResult.reset - Date.now()) / 1000)
       );
+      logError(error, 'GET', '/api/schemas', undefined, 429, { ip });
+      throw error;
     }
 
     const { userId } = await auth();
 
     if (!userId) {
-      throw new UnauthorizedError();
+      const error = new UnauthorizedError();
+      logError(error, 'GET', '/api/schemas', undefined, 401, { ip });
+      throw error;
     }
 
     const searchParams = req.nextUrl.searchParams;
@@ -131,7 +152,9 @@ export async function GET(req: NextRequest) {
     const idValidation = validateSchemaId(schemaId);
 
     if (!schemaId || !idValidation.success) {
-      throw new ValidationError(idValidation.error || 'Schema ID required');
+      const error = new ValidationError(idValidation.error || 'Schema ID required');
+      logError(error, 'GET', '/api/schemas', userId, 400, { ip, schemaId });
+      throw error;
     }
 
     const db = await getDb();
@@ -143,12 +166,19 @@ export async function GET(req: NextRequest) {
         userId,
       }) as SavedSchema | null;
     } catch (dbError) {
-      throw new DatabaseError('Failed to fetch schema from database', dbError);
+      const error = new DatabaseError('Failed to fetch schema from database', dbError);
+      logError(error, 'GET', '/api/schemas', userId, 500, { ip, schemaId });
+      throw error;
     }
 
     if (!schema) {
-      throw new NotFoundError('Schema', schemaId);
+      const error = new NotFoundError('Schema', schemaId);
+      logError(error, 'GET', '/api/schemas', userId, 404, { ip, schemaId });
+      throw error;
     }
+
+    const duration = Date.now() - startTime;
+    logRequest('GET', '/api/schemas', userId, 200, duration, { ip, schemaId });
 
     return NextResponse.json({ success: true, schema });
   } catch (error) {

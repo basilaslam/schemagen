@@ -14,6 +14,7 @@ import {
   SchemaError,
   isAppError,
 } from '@/lib/errors';
+import { logger, logRequest, logError } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -25,22 +26,28 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const startTime = Date.now();
+  const ip = await getClientIp(req);
+
   try {
     // Rate limiting
-    const ip = await getClientIp(req);
     const rateLimitResult = await rateLimit(`GET:${ip}`, RATE_LIMIT, RATE_LIMIT_WINDOW);
 
     if (!rateLimitResult.success) {
-      throw new RateLimitError(
+      const error = new RateLimitError(
         'Rate limit exceeded. Please try again later.',
         Math.ceil((rateLimitResult.reset - Date.now()) / 1000)
       );
+      logError(error, 'GET', '/api/schemas/[id]', undefined, 429, { ip });
+      throw error;
     }
 
     const { userId } = await auth();
 
     if (!userId) {
-      throw new UnauthorizedError();
+      const error = new UnauthorizedError();
+      logError(error, 'GET', '/api/schemas/[id]', undefined, 401, { ip });
+      throw error;
     }
 
     const { id } = await params;
@@ -49,7 +56,9 @@ export async function GET(
     const idValidation = validateSchemaId(id);
 
     if (!idValidation.success) {
-      throw new ValidationError(idValidation.error || 'Invalid schema ID');
+      const error = new ValidationError(idValidation.error || 'Invalid schema ID');
+      logError(error, 'GET', '/api/schemas/[id]', userId, 400, { ip, schemaId: id });
+      throw error;
     }
 
     const db = await getDb();
@@ -61,19 +70,28 @@ export async function GET(
         userId,
       }) as SavedSchema | null;
     } catch (dbError) {
-      throw new DatabaseError('Failed to fetch schema from database', dbError);
+      const error = new DatabaseError('Failed to fetch schema from database', dbError);
+      logError(error, 'GET', '/api/schemas/[id]', userId, 500, { ip, schemaId: id });
+      throw error;
     }
 
     if (!savedSchema) {
-      throw new NotFoundError('Schema', id);
+      const error = new NotFoundError('Schema', id);
+      logError(error, 'GET', '/api/schemas/[id]', userId, 404, { ip, schemaId: id });
+      throw error;
     }
 
     if (!savedSchema.dynamic) {
-      throw new SchemaError('This is not a dynamic schema');
+      const error = new SchemaError('This is not a dynamic schema');
+      logError(error, 'GET', '/api/schemas/[id]', userId, 400, { ip, schemaId: id });
+      throw error;
     }
 
     const schema = generateProductSchema(savedSchema);
     const jsonLd = schemaToJsonLd(schema);
+
+    const duration = Date.now() - startTime;
+    logRequest('GET', '/api/schemas/[id]', userId, 200, duration, { ip, schemaId: id });
 
     return new NextResponse(jsonLd, {
       headers: {
@@ -117,22 +135,28 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const startTime = Date.now();
+  const ip = await getClientIp(req);
+
   try {
     const { userId } = await auth();
 
     if (!userId) {
-      throw new UnauthorizedError();
+      const error = new UnauthorizedError();
+      logError(error, 'PATCH', '/api/schemas/[id]', undefined, 401, { ip });
+      throw error;
     }
 
     // Rate limiting
-    const ip = await getClientIp(req);
     const rateLimitResult = await rateLimit(`PATCH:${ip}`, RATE_LIMIT, RATE_LIMIT_WINDOW);
 
     if (!rateLimitResult.success) {
-      throw new RateLimitError(
+      const error = new RateLimitError(
         'Rate limit exceeded. Please try again later.',
         Math.ceil((rateLimitResult.reset - Date.now()) / 1000)
       );
+      logError(error, 'PATCH', '/api/schemas/[id]', userId, 429, { ip });
+      throw error;
     }
 
     const { id } = await params;
@@ -141,7 +165,9 @@ export async function PATCH(
     const idValidation = validateSchemaId(id);
 
     if (!idValidation.success) {
-      throw new ValidationError(idValidation.error || 'Invalid schema ID');
+      const error = new ValidationError(idValidation.error || 'Invalid schema ID');
+      logError(error, 'PATCH', '/api/schemas/[id]', userId, 400, { ip, schemaId: id });
+      throw error;
     }
 
     const updates = await req.json();
@@ -151,7 +177,9 @@ export async function PATCH(
       const validation = validateSchema(updates);
 
       if (!validation.success) {
-        throw new ValidationError('Invalid schema data', validation.errors);
+        const error = new ValidationError('Invalid schema data', validation.errors);
+        logError(error, 'PATCH', '/api/schemas/[id]', userId, 400, { ip, schemaId: id });
+        throw error;
       }
     }
 
@@ -164,12 +192,19 @@ export async function PATCH(
         { $set: updates }
       );
     } catch (dbError) {
-      throw new DatabaseError('Failed to update schema in database', dbError);
+      const error = new DatabaseError('Failed to update schema in database', dbError);
+      logError(error, 'PATCH', '/api/schemas/[id]', userId, 500, { ip, schemaId: id });
+      throw error;
     }
 
     if (result.matchedCount === 0) {
-      throw new NotFoundError('Schema', id);
+      const error = new NotFoundError('Schema', id);
+      logError(error, 'PATCH', '/api/schemas/[id]', userId, 404, { ip, schemaId: id });
+      throw error;
     }
+
+    const duration = Date.now() - startTime;
+    logRequest('PATCH', '/api/schemas/[id]', userId, 200, duration, { ip, schemaId: id });
 
     return NextResponse.json({ success: true });
   } catch (error) {
