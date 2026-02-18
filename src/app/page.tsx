@@ -12,8 +12,13 @@ import { ProductSchemaInput } from '@/types/schema';
 import { generateProductSchema, schemaToJsonLd } from '@/lib/schemaGenerator';
 import { toast } from 'sonner';
 import { CodePreview } from '@/components/code-preview';
+import { Header } from '@/components/header';
+import { useUser } from '@clerk/nextjs';
+import { useRouter } from 'next/navigation';
 
 export default function Home() {
+  const { user, isLoaded } = useUser();
+  const router = useRouter();
   const [formData, setFormData] = useState<ProductSchemaInput>({
     name: '',
     description: '',
@@ -47,6 +52,11 @@ export default function Home() {
   };
 
   const handleSave = async () => {
+    if (!isLoaded || !user) {
+      toast.error('Please sign in to save schemas');
+      return;
+    }
+
     if (!formData.name || !formData.price || !formData.url) {
       toast.error('Please fill in Product Name, Price, and URL');
       return;
@@ -57,7 +67,11 @@ export default function Home() {
       const response = await fetch('/api/schemas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...formData, dynamic: isDynamic }),
+        body: JSON.stringify({
+          ...formData,
+          dynamic: isDynamic,
+          userId: user.id,
+        }),
       });
 
       const data = await response.json();
@@ -100,25 +114,33 @@ export default function Home() {
     setLoading(false);
   };
 
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-white">
+        <Header />
+        <main className="max-w-7xl mx-auto px-4 py-16 text-center">
+          <h2 className="text-3xl font-bold text-primary tracking-tight mb-4">
+            Welcome to SchemaGen
+          </h2>
+          <p className="text-slate-500 text-lg mb-8">
+            Sign in to generate SEO schemas for your products
+          </p>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-white">
-      {/* Header - Stripe/Vercel style */}
-      <header className="border-b border-slate-200 bg-white/80 backdrop-blur-sm sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-primary rounded-md flex items-center justify-center">
-              <Code className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <h1 className="text-lg font-semibold text-primary">SchemaGen</h1>
-              <p className="text-xs text-slate-500">E-commerce SEO Schema</p>
-            </div>
-          </div>
-          <Button variant="outline" size="sm">
-            Upgrade to Pro
-          </Button>
-        </div>
-      </header>
+      <Header />
 
       <main className="max-w-7xl mx-auto px-4 py-8">
         <div className="mb-8">

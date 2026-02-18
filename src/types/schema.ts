@@ -17,12 +17,15 @@ export interface ProductSchemaInput {
   url: string;
 }
 
-export interface SavedSchema extends ProductSchemaInput {
-  _id?: string;
+export interface SavedSchemaInput extends ProductSchemaInput {
   schemaId: string;
   dynamic: boolean;
   userId?: string;
   createdAt: Date;
+}
+
+export interface SavedSchema extends SavedSchemaInput {
+  _id: string | any;
 }
 
 export interface ProductSchema {
